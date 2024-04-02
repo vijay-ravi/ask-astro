@@ -17,7 +17,7 @@
                     "model": "gpt-4"
                   },
                 "qna-openai": {
-                    "model": "text-davinci-003",
+                    "model": "gpt-3.5-turbo-instruct",
                     "maxTokens": 100,
                     "temperature": 0.0,
                     "topP": 1,
