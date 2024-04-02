@@ -4,10 +4,10 @@ from pathlib import Path
 
 import streamlit as st
 from langchain.chains import RetrievalQA
-from langchain.llms import OpenAI as langchain_openai
+from langchain.chat_models import ChatOpenAI
 from langchain.vectorstores.weaviate import Weaviate as WeaviateStore
 from PIL import Image
-from weaviate_provider.hooks.weaviate import WeaviateHook
+from airflow.providers.weaviate.hooks.weaviate import WeaviateHook
 
 ask_astro_env = os.environ.get("ASK_ASTRO_ENV", "")
 
@@ -24,7 +24,7 @@ else:
     weaviate_client = st.session_state["weaviate_client"]
 
 if "openai_key" not in st.session_state:
-    openai_key = json.loads(weaviate_hook.get_connection(_WEAVIATE_CONN_ID).extra)["X-OpenAI-Api-Key"]
+    openai_key = json.loads(weaviate_hook.get_connection(_WEAVIATE_CONN_ID).extra)["additional_headers"]["X-OpenAI-Api-Key"]
     st.session_state["openai_key"] = openai_key
 else:
     openai_key = st.session_state["openai_key"]
@@ -105,7 +105,7 @@ with weaviate_qna_tab:
 
         st.subheader("Docs results")
         results = (
-            weaviate_client.query.get("Docs", ["docLink", "_additional {answer {hasAnswer property result} }"])
+            weaviate_client.query.get("DocsDev", ["docLink", "_additional {answer {hasAnswer property result} }"])
             .with_ask(ask)
             .with_limit(3)
             .with_additional(["certainty", "id", "distance"])
@@ -118,10 +118,10 @@ with weaviate_qna_tab:
                     raise Exception("Cannot vectorize.  Check the OPENAI_API key as environment variable.")
                 else:
                     st.write(error["message"])
-        elif len(results["data"]["Get"]["Docs"]) > 0:
+        elif len(results["data"]["Get"]["DocsDev"]) > 0:
             docLinks = []
             link_count = 1
-            for result in results["data"]["Get"]["Docs"]:
+            for result in results["data"]["Get"]["DocsDev"]:
                 if result["_additional"]["answer"]["hasAnswer"]:
                     write_response(result["_additional"]["answer"]["result"])
                 docLinks.append(f"[{link_count}]({result['docLink']})")
@@ -138,7 +138,7 @@ with weaviate_gen_tab:
              question to see the prompt."""
     )
 
-    prompt_path = Path(__file__).parent.joinpath("combine_docs_sys_prompt_webapp.txt")
+    prompt_path = Path(__file__).parent.joinpath("combine_docs_chat_prompt.txt")
     prompt = prompt_path.read_text()
 
     st.write(f"The prompt text can be found in the file __`{prompt_path}`__")
@@ -154,7 +154,7 @@ with weaviate_gen_tab:
         st.header("Generated Answer")
 
         results = (
-            weaviate_client.query.get("Docs", ["docLink"])
+            weaviate_client.query.get("DocsDev", ["docLink"])
             .with_near_text({"concepts": question})
             .with_generate(grouped_task=prompt.format(question=question))
             .with_limit(3)
@@ -167,10 +167,10 @@ with weaviate_gen_tab:
                     raise Exception("Cannot vectorize.  Check the OPENAI_API key as environment variable.")
                 else:
                     st.write(error["message"])
-        elif len(results["data"]["Get"]["Docs"]) > 0:
+        elif len(results["data"]["Get"]["DocsDev"]) > 0:
             docLinks = []
             link_count = 1
-            for result in results["data"]["Get"]["Docs"]:
+            for result in results["data"]["Get"]["DocsDev"]:
                 if result["_additional"]["generate"] and not result["_additional"]["generate"]["error"]:
                     write_response(result["_additional"]["generate"]["groupedResult"] + "\n")
                 docLinks.append(f"[{link_count}]({result['docLink']})")
@@ -196,16 +196,22 @@ with langchain_weaviate_tab:
     st.write("- When I set an environment variable via the Astro UI, does my deployment restart?")
     st.write("- How can I use dynamic tasks?")
 
-    vectorstore = WeaviateStore(weaviate_client, "Docs", "content")
-    openai_client = langchain_openai(temperature=0.2, openai_api_key=openai_key)
-    qa = RetrievalQA.from_chain_type(llm=openai_client, chain_type="map_reduce", retriever=vectorstore.as_retriever())
+    vectorstore = WeaviateStore(weaviate_client, "DocsDev", "content")
+    openai_client = ChatOpenAI(model_name='gpt-4', temperature=0.2, openai_api_key=openai_key)
+#    openai_client = langchain_openai(temperature=0.2, openai_api_key=openai_key, model='gpt-4')
+    qa = RetrievalQA.from_chain_type(llm=openai_client, retriever=vectorstore.as_retriever(), verbose=True, return_source_documents=True)
 
     st.subheader("Please enter a question or dialogue to get started!")
 
     langchain_question = st.text_area("Langchain Prompt", placeholder="")
 
     if langchain_question:
-        result = qa.run(langchain_question)
-
-        write_response(result)
+        result = qa({"query": langchain_question})
+        
+        st.subheader("Result")
+        write_response(result['result'])
+        st.subheader("Source Documents")
+        for doc in result['source_documents']:
+            write_response(doc.page_content)
+        
         st.markdown(disclaimer, unsafe_allow_html=True)
